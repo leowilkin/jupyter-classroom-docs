@@ -1,0 +1,129 @@
+---
+title: Installation
+desc: Getting your machine set up to handle TLJH installation
+---
+
+import { Code, Tabs, TabItem, Steps, Icon, LinkCard } from '@astrojs/starlight/components';
+import { Kbd } from 'starlight-kbd/components'
+
+Firstly, choose which operating system you'll be running JupyterHub on.
+
+<Tabs syncKey="os">
+  <TabItem label="Windows" icon="seti:windows">
+
+        1. ##### Install & activate WSL
+
+            As JupyterHub only supports Linux, we need to make a virtual Linux environment within Windows. We can do this using WSL2.
+            <Steps>
+                1. Open `Powershell` as an administrator.
+
+                    <details>
+                    <summary>Hint</summary>
+                    Right click on the Windows icon <Icon name="seti:windows" /> on your taskbar and select `Terminal (admin)`
+                    </details>
+
+                2. Install WSL components
+
+                    ```bash
+                    wsl --install -d Ubuntu-22.04
+                    ```
+
+                3. Once installed, enable `systemd`
+
+                    ```bash
+                    sudo nano /etc/wsl.conf
+                    ```
+
+                    A window will open, type in this:
+
+                    ```nano title="/etc/wsl.conf"
+                    [boot]
+                    systemd=true
+                    ```
+                    Then use <Kbd windows="Control+X" /> and then type <Kbd windows="Y"/> and hit enter.
+
+                4. Finally, restart your WSL.
+
+                    ```bash
+                    wsl --shutdown
+                    ```
+            </Steps>
+        2. ##### Install JupyterHub
+
+            Now, with our WSL instance set up, we can move onto installing TLJH.
+            <Steps>
+                1. Make sure you're in WSL
+
+                    ```bash
+                    wsl
+                    ```
+
+                2. Make sure you have `python3`, `python3-dev`, `curl` and `git` installed.
+
+                    ```bash
+                    sudo apt install python3 python3-dev git curl
+                    ```
+
+                3. Run TLJH's installer
+
+                    Make sure you replace `<admin-user>` with your preferred username.
+
+                    ```bash
+                    curl -L https://tljh.jupyter.org/bootstrap.py | sudo python3 - --admin <admin-user>
+                    ```
+                4. Configure admin account
+
+                    If all goes well, you should see this at the end of the logs:
+
+                    ```txt
+                    Waiting for JupyterHub to come up (1/20 tries)
+                    Done!
+                    ```
+
+                    Visit [http://localhost](http://localhost), and input the `<admin-user>` username you chose above, and a password of your choice.
+            </Steps>
+
+            
+        4. ##### Configure networking
+
+            With our TLJH instance authenticated, we now need to allow students & staff across the network to connect to this device.
+  </TabItem>
+  <TabItem label="Linux" icon="linux">
+    <Steps>
+        1. Make sure you have `python3`, `python3-dev`, `curl` and `git` installed.
+
+            ```bash
+            sudo apt install python3 python3-dev git curl
+            ```
+
+        2. Run TLJH's installer
+
+            Make sure you replace `<admin-user>` with your preferred username.
+
+            ```bash
+            curl -L https://tljh.jupyter.org/bootstrap.py | sudo python3 - --admin <admin-user>
+            ```
+        3. Configure admin account
+
+            If all goes well, you should see this at the end of the logs:
+
+            ```txt
+            Waiting for JupyterHub to come up (1/20 tries)
+            Done!
+            ```
+
+            Visit [http://localhost](http://localhost), and input the `<admin-user>` username you chose above, and a password of your choice.
+    </Steps>
+  </TabItem>
+
+Now, move onto the next step - configuring access.
+
+<LinkCard title="Next: Configuring Access" href="/configuration/access/" />
+
+</Tabs>
+
+
+
+
+
+    

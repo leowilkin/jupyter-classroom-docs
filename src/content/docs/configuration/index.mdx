@@ -1,0 +1,25 @@
+---
+title: Before you begin
+description: Before you begin, make sure you have the necessary prerequisites and understand the basics of JupyterHub and Jupyter Classroom.
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+This guide will provide you the instructions and commands nessesary to run Jupyter Classroom, and by extension, JupyterHub. 
+
+**This gets technical**. If you have not encountered running terminal commands, or managing infrastructure before, I recommend you ask an IT professional at your school/institution for support.
+
+For simplicity, I'll be using [TLJH](https://tljh.jupyter.org/en/latest/index.html) (The Littlest JupyterHub). If you're expecting to run with over 100 users on one instance, please read [this document](https://tljh.jupyter.org/en/latest/topic/whentouse.html#) from Jupyter.org.
+
+Finally, you'll need a compute instance. This instruction guide will walk you through running this on-prem, but if you're not up for that, here's a few useful guides to running JupyterHub on a different VPS solution.
+
+<CardGrid>
+    <LinkCard title="Installing on DigitalOcean" href="https://tljh.jupyter.org/en/latest/install/digitalocean.html" />
+    <LinkCard title="Installing on Google Cloud" href="https://tljh.jupyter.org/en/latest/install/google.html" />
+    <LinkCard title="Installing on AWS (Amazon)" href="https://tljh.jupyter.org/en/latest/install/amazon.html" />
+    <LinkCard title="Installing on Azure (Microsoft)" href="https://tljh.jupyter.org/en/latest/install/azure.html" />
+</CardGrid>
+
+If you're still up to installing on-prem on your own server, let's go to the next page.
+
+<LinkCard title="Installing on your own server" href="/installation/dependencies/" />

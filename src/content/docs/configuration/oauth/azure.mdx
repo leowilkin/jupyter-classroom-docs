@@ -1,0 +1,71 @@
+---
+title: Configure Microsoft Azure OAuth
+desc: Configuring Sign in with Microsoft
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This requires an app registration in your school's Microsoft Entra ID (Azure AD) tenant. You'll likely need IT involvement for that part.
+
+<Steps>
+    1. **Install the authenticator**
+
+        ```bash
+        sudo /opt/tljh/hub/bin/pip install oauthenticator
+        ```
+
+    2. **Register an app in Azure AD**
+
+        Either you or IT needs to do this at https://portal.azure.com > Entra ID > App registrations > New registration:
+
+        - Name: `JupyterHub`
+        - Supported account types: "Accounts in this organizational directory only" (single tenant)
+        - Redirect URI: `http://<your-ip>/hub/oauth_callback` (type: Web)
+
+        After creation, note down:
+        - **Application (client) ID**
+        - **Directory (tenant) ID**
+        - Under Certificates & secrets, create a new client secret and copy the **value**
+
+    3. **Configure TLJH**
+
+        ```bash
+        sudo tljh-config set auth.type oauthenticator.azuread.AzureAdOAuthenticator
+        sudo tljh-config set auth.AzureAdOAuthenticator.client_id '<client-id>'
+        sudo tljh-config set auth.AzureAdOAuthenticator.client_secret '<client-secret>'
+        sudo tljh-config set auth.AzureAdOAuthenticator.tenant_id '<tenant-id>'
+        sudo tljh-config set auth.AzureAdOAuthenticator.oauth_callback_url 'http://<your-ip>/hub/oauth_callback'
+
+        # Allow only users from your tenant
+        sudo tljh-config set auth.AzureAdOAuthenticator.allowed_organizations '["<tenant-id>"]'
+
+        # Set yourself as admin using your Microsoft email
+        sudo tljh-config set auth.AzureAdOAuthenticator.admin_users '["leo@wellingtoncollege.org.uk"]'
+
+        sudo tljh-config reload hub
+        ```
+
+        Replace the email with whatever your actual school Microsoft account is.
+
+    4. **Restrict to specific groups (optional)**
+
+        If you want only your CS class rather than the entire school:
+
+        - In Azure AD, create a security group (e.g. "CS JupyterHub Users")
+        - In the app registration, go to Token configuration > Add groups claim > Security groups
+        - Then configure:
+
+        ```bash
+        sudo tljh-config set auth.AzureAdOAuthenticator.manage_groups true
+        sudo tljh-config set auth.AzureAdOAuthenticator.allowed_groups '["<group-object-id>"]'
+        ```
+
+        This way only students in that group can log in.
+
+</Steps>
+
+**What to ask IT for:**
+
+- An app registration in the school's Azure AD tenant
+- The tenant ID
+- If restricting by group, the object ID of the relevant security group

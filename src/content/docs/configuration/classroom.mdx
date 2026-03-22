@@ -1,0 +1,134 @@
+---
+title: Set up Jupyter Classroom
+desc: Install the Jupyter Classroom Management plugin
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+<Steps>
+
+1. ##### Install the package
+
+    ```bash
+    sudo /opt/tljh/user/bin/pip install jupyter-classroom   
+    ```
+
+3. ##### Create the JupyterHub config snippet
+
+   TLJH uses `/opt/tljh/config/jupyterhub_config.d/*.py` as an escape hatch for arbitrary JupyterHub config. Create a new file:
+
+   ```bash
+   sudo nano /opt/tljh/config/jupyterhub_config.d/classroom-manager.py
+   ```
+
+   Paste the following:
+
+   ```python
+   c.JupyterHub.services = [
+       {
+           "name": "classroom-manager",
+           "url": "http://127.0.0.1:10101",
+           "command": ["/opt/tljh/hub/bin/jupyter-classroom"],
+           "oauth_client_allowed_scopes": ["identify"],
+       },
+   ]
+
+   c.JupyterHub.load_roles = [
+       {
+           "name": "classroom-manager-role",
+           "services": ["classroom-manager"],
+           "scopes": [
+               "list:users",
+               "read:users",
+               "admin:servers",
+               "admin:groups",
+               "read:groups",
+               "list:groups",
+           ],
+       },
+       {
+           "name": "user",
+           "scopes": [
+               "self",
+               "access:services!service=classroom-manager",
+           ],
+       },
+   ]
+
+   # Pre-create the teachers group
+   # You may need to rename this to fit an OAuth group that you created
+   c.JupyterHub.load_groups = {
+       "teachers": [],
+   }
+   ```
+
+   **Important notes on the config:**
+
+   - If TLJH's own config already defines `load_roles` or `load_groups` (or if you have other config snippets that do), you will get conflicts. JupyterHub does not merge list-based config across files -- the last assignment wins. If you have existing role/group config, you need to consolidate into a single file.
+
+4. ##### Reload JupyterHub
+
+   ```bash
+   sudo tljh-config reload hub
+   ```
+
+   This restarts JupyterHub with the new config. Running user servers are not affected.
+
+5. ##### Verify the service is running
+
+   Navigate to:
+
+   ```
+   https://<your-tljh-domain>/services/classroom-manager/
+   ```
+
+   You should be redirected through JupyterHub OAuth and land on the Classroom Manager dashboard.
+
+6. ##### Add teachers to the `teachers` group
+
+   Users in the `teachers` group get admin-level access within Classroom Manager. Add them via the JupyterHub Admin panel (Admin > Groups), or by editing the `load_groups` dict in the config snippet:
+
+   ```python
+   c.JupyterHub.load_groups = {
+       "teachers": ["teacher1", "teacher2"],
+   }
+   ```
+
+   Then reload again: `sudo tljh-config reload hub`
+
+</Steps>
+
+## Troubleshooting
+
+### Check service logs
+
+```bash
+sudo journalctl -u jupyterhub -f
+```
+
+The managed service stdout/stderr is captured by JupyterHub's own journal. Look for lines referencing `classroom-manager`.
+
+### Port conflict
+
+If port `10101` is already in use, change it in both the `"url"` field in the service config and in `app.py` (the uvicorn bind port).
+
+### Dependency issues
+
+If you get import errors, verify the deps are in the hub env:
+
+```bash
+sudo /opt/tljh/hub/bin/pip list | grep -i fastapi
+```
+
+### Role/group merge conflicts
+
+If Classroom Manager doesn't appear or you get permission errors, check whether another config snippet is overwriting `load_roles` or `load_groups`. Consolidate all role/group definitions into one file.
+
+## Updating
+
+```bash
+cd /opt/jupyter-classroom
+sudo git pull
+sudo /opt/tljh/hub/bin/pip install -r requirements.txt
+sudo tljh-config reload hub
+```

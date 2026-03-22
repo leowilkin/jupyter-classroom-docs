@@ -1,0 +1,119 @@
+---
+title: Configure Custom OAuth
+desc: Configuring Sign in with a custom OAuth provider such as Authentik
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This works with any OAuth 2.0 / OpenID Connect provider. Authentik is used as the example here, but the same approach applies to Keycloak, Authelia, Kanidm, Casdoor, or any OIDC-compliant provider.
+
+<Steps>
+    1. **Install the authenticator**
+
+        ```bash
+        sudo /opt/tljh/hub/bin/pip install oauthenticator
+        ```
+
+    2. **Create an OAuth application in Authentik**
+
+        In the Authentik admin interface:
+
+        - Go to Applications > Providers > Create
+        - Provider type: OAuth2/OpenID Connect
+        - Name: `JupyterHub`
+        - Authorization flow: select your default authorization flow
+        - Client type: Confidential
+        - Redirect URIs: `http://<your-ip>/hub/oauth_callback`
+        - Scopes: `openid`, `email`, `profile`
+
+        After creation, note down:
+        - **Client ID**
+        - **Client Secret**
+        - **OpenID Connect Discovery URL**: `https://<authentik-domain>/application/o/<app-slug>/.well-known/openid-configuration`
+
+        Then go to Applications > Applications > Create:
+        - Name: `JupyterHub`
+        - Slug: `jupyterhub`
+        - Provider: select the provider you just created
+
+    3. **Find your provider's endpoints**
+
+        You can get all endpoints from the discovery URL:
+
+        ```bash
+        curl -s https://<authentik-domain>/application/o/jupyterhub/.well-known/openid-configuration | python3 -m json.tool
+        ```
+
+        Note the values for:
+        - `authorization_endpoint`
+        - `token_endpoint`
+        - `userinfo_endpoint`
+
+        For Authentik these will typically be:
+        - Authorize: `https://<authentik-domain>/application/o/authorize/`
+        - Token: `https://<authentik-domain>/application/o/token/`
+        - Userinfo: `https://<authentik-domain>/application/o/userinfo/`
+
+    4. **Configure TLJH**
+
+        ```bash
+        sudo tljh-config set auth.type oauthenticator.generic.GenericOAuthenticator
+        sudo tljh-config set auth.GenericOAuthenticator.client_id '<client-id>'
+        sudo tljh-config set auth.GenericOAuthenticator.client_secret '<client-secret>'
+        sudo tljh-config set auth.GenericOAuthenticator.oauth_callback_url 'http://<your-ip>/hub/oauth_callback'
+        sudo tljh-config set auth.GenericOAuthenticator.authorize_url 'https://<authentik-domain>/application/o/authorize/'
+        sudo tljh-config set auth.GenericOAuthenticator.token_url 'https://<authentik-domain>/application/o/token/'
+        sudo tljh-config set auth.GenericOAuthenticator.userdata_url 'https://<authentik-domain>/application/o/userinfo/'
+        sudo tljh-config set auth.GenericOAuthenticator.scope '["openid", "email", "profile"]'
+        sudo tljh-config set auth.GenericOAuthenticator.login_service 'Authentik'
+
+        # The claim in the userinfo response that contains the username
+        sudo tljh-config set auth.GenericOAuthenticator.username_claim 'preferred_username'
+
+        # Set yourself as admin
+        sudo tljh-config set auth.GenericOAuthenticator.admin_users '["leo"]'
+
+        # Allow specific users
+        sudo tljh-config set auth.GenericOAuthenticator.allowed_users '["leo", "student1", "student2"]'
+
+        sudo tljh-config reload hub
+        ```
+
+    5. **Allow all users from the provider (optional)**
+
+        If you want anyone who can authenticate with Authentik to access JupyterHub without maintaining an allowed users list:
+
+        ```bash
+        sudo tljh-config set auth.GenericOAuthenticator.allow_all true
+        ```
+
+        Use this when Authentik itself handles access control (e.g. only users assigned to the JupyterHub application in Authentik can authenticate). This is the recommended approach if you manage group membership in Authentik rather than in JupyterHub.
+
+    6. **Map groups from Authentik (optional)**
+
+        If Authentik includes group membership in the userinfo response (it does by default under the `groups` claim):
+
+        ```bash
+        sudo tljh-config set auth.GenericOAuthenticator.manage_groups true
+        sudo tljh-config set auth.GenericOAuthenticator.claim_groups_key 'groups'
+        sudo tljh-config set auth.GenericOAuthenticator.allowed_groups '["cs-students"]'
+        sudo tljh-config set auth.GenericOAuthenticator.admin_groups '["cs-teachers"]'
+        ```
+
+        This maps Authentik groups directly to JupyterHub roles. Users in `cs-teachers` get admin access, users in `cs-students` get regular access, and anyone not in either group is denied.
+
+</Steps>
+
+**Adapting for other providers**
+
+The only things that change between providers are the three endpoint URLs and the `username_claim`. Common values:
+
+| Provider | Authorize | Token | Userinfo | Username claim |
+|----------|-----------|-------|----------|----------------|
+| Authentik | `/application/o/authorize/` | `/application/o/token/` | `/application/o/userinfo/` | `preferred_username` |
+| Keycloak | `/realms/<realm>/protocol/openid-connect/auth` | `/realms/<realm>/protocol/openid-connect/token` | `/realms/<realm>/protocol/openid-connect/userinfo` | `preferred_username` |
+| Authelia | `/api/oidc/authorization` | `/api/oidc/token` | `/api/oidc/userinfo` | `preferred_username` |
+| Kanidm | `/ui/oauth2` | `/oauth2/token` | `/oauth2/openid/<client>/userinfo` | `preferred_username` |
+| Casdoor | `/login/oauth/authorize` | `/api/login/oauth/access_token` | `/api/userinfo` | `preferred_username` |
+
+Any provider that publishes a `.well-known/openid-configuration` endpoint will list its URLs there.

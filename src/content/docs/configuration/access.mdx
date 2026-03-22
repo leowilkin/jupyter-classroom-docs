@@ -1,0 +1,95 @@
+---
+title: Controlling access
+desc: Control the availability of components across your JupyterHub to suit a classroom
+---
+
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+We now want to begin limiting our JupyterHub instance so students don't over-use resources, or create security vulnerabilities.
+
+## Authentication
+
+We're first going to disable creating users on first authentication. This stops JupyterHub from creating new users on first login who don't have permission.
+
+```bash
+sudo tljh-config set auth.FirstUseAuthenticator.create_users false
+sudo tljh-config reload hub
+```
+
+Now, only admin-created users can log in.
+
+If you're looking to configure access via OAuth (Sign in with Microsoft/Google) so students don't have to remember another password, you can find the guides below.
+
+<CardGrid>
+    <LinkCard title="Configure Microsoft Azure OAuth" href="/configuration/oauth/azure" />
+    <LinkCard title="Configure GitHub OAuth" href="/configuration/oauth/github" />
+    <LinkCard title="Configure Google OAuth" href="/configuration/oauth/google" />
+    <LinkCard title="Configure custom OAuth" href="/configuration/oauth/custom" />
+</CardGrid>
+
+## Resource Limiting
+
+To prevent users from crashing your JupyterHub instance by running resource intensive operations, we limit each JupyterHub server instance's RAM, CPU, and Disk usage.
+
+You'll need to access the terminal of the server that's running your JupyterHub instance.
+
+If you're on Windows, run `wsl` in a terminal to access your Linux bash; or just open a normal terminal if you're on Linux.
+
+```bash
+# sets the maximum memory usage to 750 MB. This should allow for most basic operations, if following the University of Southampton and Wellington College Computational Chemistry course.
+sudo tljh-config set limits.memory 750M
+
+# limits each server to use half a CPU core each
+sudo tljh-config set limits.cpu 0.5
+
+# limits the storage of each server to 1GB. You may need to increase this if serving large PDFs or datasets to students.
+sudo tljh-config set user_environment.default_server_options.storage_limit 1G
+
+# this saves, and enables the configuration
+sudo tljh-config reload hub
+```
+
+## Disable Extensions
+
+Disable the extension manager so students can't install random extensions:
+
+```bash
+sudo /opt/tljh/user/bin/jupyter labextension disable @jupyterlab/extensionmanager-extension
+```
+
+You can still install extensions, and any existing extensions will not be removed.
+
+## Disable Terminal
+
+This is highly recommended to prevent students from running arbitary commands on the main server.
+
+```bash
+sudo mkdir -p /opt/tljh/user/etc/jupyter/labconfig
+
+sudo tee /opt/tljh/user/etc/jupyter/labconfig/page_config.json << 'EOF'
+{
+  "disabledExtensions": {
+    "@jupyterlab/terminal-extension": true,
+    "@jupyterlab/extensionmanager-extension": true
+  }
+}
+EOF
+```
+
+## Idle Culling
+
+We want to stop servers that haven't been running or active recently so they don't hog memory or CPU usage e.g. between classes.
+
+```bash
+sudo tljh-config set services.cull.enabled true
+
+# This sets the timeout to 30 minutes
+sudo tljh-config set services.cull.timeout 1800
+
+# JupyterHub will check every 60 seconds
+sudo tljh-config set services.cull.every 60
+
+sudo tljh-config reload hub
+```
+
+Students just click their link again to restart, and their data auto-saves every 120 seconds.

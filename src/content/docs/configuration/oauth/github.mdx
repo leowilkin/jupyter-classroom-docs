@@ -1,0 +1,66 @@
+---
+title: Configure GitHub OAuth
+desc: Configuring Sign in with GitHub
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This requires a GitHub account with permission to create OAuth Apps. Any GitHub user can do this, no organisational admin needed.
+
+<Steps>
+    1. **Install the authenticator**
+
+        ```bash
+        sudo /opt/tljh/hub/bin/pip install oauthenticator
+        ```
+
+    2. **Create a GitHub OAuth App**
+
+        Go to https://github.com/settings/developers > OAuth Apps > New OAuth App:
+
+        - Application name: `JupyterHub`
+        - Homepage URL: `http://<your-ip>`
+        - Authorization callback URL: `http://<your-ip>/hub/oauth_callback`
+
+        After creation, note down:
+        - **Client ID** (shown on the app page)
+        - Click "Generate a new client secret" and copy the **Client Secret** immediately (it won't be shown again)
+
+    3. **Configure TLJH**
+
+        ```bash
+        sudo tljh-config set auth.type oauthenticator.github.GitHubOAuthenticator
+        sudo tljh-config set auth.GitHubOAuthenticator.client_id '<client-id>'
+        sudo tljh-config set auth.GitHubOAuthenticator.client_secret '<client-secret>'
+        sudo tljh-config set auth.GitHubOAuthenticator.oauth_callback_url 'http://<your-ip>/hub/oauth_callback'
+
+        # Set yourself as admin using your GitHub username
+        sudo tljh-config set auth.GitHubOAuthenticator.admin_users '["<your-github-username>"]'
+
+        # Allow specific GitHub usernames to log in
+        sudo tljh-config set auth.GitHubOAuthenticator.allowed_users '["student1", "student2"]'
+
+        sudo tljh-config reload hub
+        ```
+
+    4. **Restrict to a GitHub Organisation (optional)**
+
+        If your school or department has a GitHub Organisation, you can restrict login to its members instead of listing individual usernames:
+
+        ```bash
+        sudo tljh-config set auth.GitHubOAuthenticator.allowed_organizations '["your-org-name"]'
+        ```
+
+        The OAuth App must be approved by an organisation owner. Go to the organisation's Settings > Third-party access > OAuth application policy and approve the app.
+
+    5. **Restrict to a specific team (optional)**
+
+        For finer control, restrict to a team within the organisation:
+
+        ```bash
+        sudo tljh-config set auth.GitHubOAuthenticator.allowed_organizations '["your-org-name:team-slug"]'
+        ```
+
+        The team slug is the URL-friendly version of the team name (e.g. "CS Students" becomes `cs-students`). You can find it in the team's URL on GitHub.
+
+</Steps>

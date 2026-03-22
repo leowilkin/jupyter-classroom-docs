@@ -1,0 +1,15 @@
+---
+import Default from '@astrojs/starlight/components/Footer.astro';
+
+const isHomepage = Astro.locals.starlightRoute.id === '';
+---
+{
+  isHomepage ? (
+    <p>The Jupyter® and Jupyter Logo® trademarks are registered with the U.S. Patent & Trademark Office by <a href="https://lf-charities.org/">LF Charities</a>. © 2026</p>
+    <p>© 2026 <a href="https://leowilkin.com">Leo Wilkin</a> · Licensed under the <a href="https://github.com/leowilkin/jupyter-classroom/blob/main/LICENSE">MIT License</a></p>
+  ) : (
+    <Default>
+      <slot />
+    </Default>
+  )
+}

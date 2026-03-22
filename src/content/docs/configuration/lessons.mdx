@@ -1,0 +1,56 @@
+---
+title: Setting up learning environment
+desc: 
+---
+
+import { LinkCard } from '@astrojs/starlight/components';
+
+## nbgitpuller
+
+Open the terminal on your server (`wsl` to access bash if you're on Windows) and run:
+
+```bash
+sudo /opt/tljh/user/bin/pip install nbgitpuller
+```
+
+This installs [nbgitpuller](https://nbgitpuller.readthedocs.io/en/latest/index.html) which allows you to provide a one-click notebook setup for your students.
+
+You'll need to [create a GitHub repo](https://docs.github.com/en/repositories/creating-and-managing-repositories/quickstart-for-repositories) with your lesson notebooks. Then use the link generator to build URLs:
+
+<LinkCard title="nbgitpuller Link Generator" href="https://nbgitpuller.readthedocs.io/en/latest/link.html" />
+
+Fill in:
+- JupyterHub URL: `http://<your-static-ip>`, or your local domain
+- Git repo URL: your repo
+- Branch: `main`
+- File to open: e.g. `lesson1/intro.ipynb`
+- Application: JupyterLab
+
+It gives you a link like:
+
+```
+http://10.19.x.x/hub/user-redirect/git-pull?repo=https://github.com/yourorg/cs-lessons&urlpath=lab/tree/cs-lessons/lesson1/intro.ipynb&branch=main
+```
+
+## Switch default to JupyterLab
+
+```bash
+sudo tljh-config set user_environment.default_app jupyterlab
+sudo tljh-config reload hub
+```
+
+## Install curriculum packages
+
+We're using these packages for our courses. You may have different requirements.
+
+```bash
+sudo /opt/tljh/user/bin/pip install numpy matplotlib pandas
+```
+
+We also use `rdkit` for Chemistry molecule generation, which needs to be installed via Conda.
+
+```bash
+sudo /opt/tljh/user/bin/mamba install -c conda-forge rdkit
+```
+
+

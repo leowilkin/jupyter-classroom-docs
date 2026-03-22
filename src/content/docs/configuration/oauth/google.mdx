@@ -1,0 +1,74 @@
+---
+title: Configure Google OAuth
+desc: Configuring Sign in with Google
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This requires access to the Google Cloud Console to create an OAuth 2.0 credential. Any Google account can do this, but restricting to a Google Workspace domain (e.g. school accounts only) requires knowing the domain name.
+
+<Steps>
+    1. **Install the authenticator**
+
+        ```bash
+        sudo /opt/tljh/hub/bin/pip install oauthenticator
+        ```
+
+    2. **Create a Google OAuth credential**
+
+        Go to https://console.cloud.google.com > APIs & Services > Credentials > Create Credentials > OAuth client ID:
+
+        - You may need to configure the OAuth consent screen first:
+            - User type: "Internal" if using Google Workspace, otherwise "External"
+            - App name: `JupyterHub`
+            - User support email: your email
+            - Authorised domains: your domain if applicable
+            - Scopes: add `email`, `profile`, `openid`
+        - Application type: Web application
+        - Name: `JupyterHub`
+        - Authorised redirect URIs: `http://<your-ip>/hub/oauth_callback`
+
+        After creation, note down:
+        - **Client ID**
+        - **Client Secret**
+
+    3. **Configure TLJH**
+
+        ```bash
+        sudo tljh-config set auth.type oauthenticator.google.GoogleOAuthenticator
+        sudo tljh-config set auth.GoogleOAuthenticator.client_id '<client-id>'
+        sudo tljh-config set auth.GoogleOAuthenticator.client_secret '<client-secret>'
+        sudo tljh-config set auth.GoogleOAuthenticator.oauth_callback_url 'http://<your-ip>/hub/oauth_callback'
+
+        # Set yourself as admin using your Google email
+        sudo tljh-config set auth.GoogleOAuthenticator.admin_users '["leo@wellingtoncollege.org.uk"]'
+
+        # Allow specific Google email addresses to log in
+        sudo tljh-config set auth.GoogleOAuthenticator.allowed_users '["student1@gmail.com", "student2@gmail.com"]'
+
+        sudo tljh-config reload hub
+        ```
+
+    4. **Restrict to a Google Workspace domain (optional)**
+
+        If your school uses Google Workspace (e.g. `@wellingtoncollege.org.uk`), you can restrict login to that domain instead of listing individual emails:
+
+        ```bash
+        sudo tljh-config set auth.GoogleOAuthenticator.hosted_domain '["wellingtoncollege.org.uk"]'
+        sudo tljh-config set auth.GoogleOAuthenticator.login_service 'Wellington College Google'
+        ```
+
+        This allows any user with an `@wellingtoncollege.org.uk` Google account to log in. You can list multiple domains if needed.
+
+    5. **Restrict to specific users within a domain (optional)**
+
+        If you want only your CS class rather than the entire school domain:
+
+        ```bash
+        sudo tljh-config set auth.GoogleOAuthenticator.hosted_domain '["wellingtoncollege.org.uk"]'
+        sudo tljh-config set auth.GoogleOAuthenticator.allowed_users '["student1@wellingtoncollege.org.uk", "student2@wellingtoncollege.org.uk"]'
+        ```
+
+        Both the domain restriction and the allowed users list apply together, so the user must match both.
+
+</Steps>

@@ -1,40 +1,39 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
+title: Jupyter Classroom
+description: Get your students up and running with JupyterHub notebooks in minutes using Jupyter Classroom.
 template: splash # Remove or comment out this line to display the site sidebar on this page.
 hero:
-  tagline: Congrats on setting up a new Starlight project!
+  tagline: Get your students up and running with JupyterHub notebooks in minutes using Jupyter Classroom.
   image:
-    file: ../../assets/houston.webp
+    file: ../../assets/classroom-edit.png
   actions:
-    - text: Example Guide
-      link: /guides/example/
+    - text: Get Started
+      link: /configuration/
       icon: right-arrow
-    - text: Read the Starlight docs
-      link: https://starlight.astro.build
+    - text: View on GitHub
+      link: https://github.com/leowilkin/jupyter-classroom
       icon: external
       variant: minimal
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+## Features
 
 <CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+	<Card title="Create classrooms" icon="pencil">
+		Make groups of students and assign them to classrooms for easy management.
 	</Card>
-	<Card title="Change page layout" icon="document">
-		Delete `template: splash` in `src/content/docs/index.mdx` to display a
-		sidebar on this page.
+	<Card title="Empower teachers" icon="document">
+		Allow teachers to manage & access students' JupyterHub notebooks without needing technical expertise.
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="Enable one-click deployment" icon="add-document">
+		Start a new JupyterHub notebook for a student with a single click, without needing to install complicated software.
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
+	<Card title="Cross-platform compatibility" icon="setting">
+		Work seamlessly across different operating systems and devices, even on devices that can't run JupyterHub locally.
 	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="Secure access" icon="setting">
+		Ensure secure access to JupyterHub notebooks with role-based permissions and authentication.
 	</Card>
 </CardGrid>
