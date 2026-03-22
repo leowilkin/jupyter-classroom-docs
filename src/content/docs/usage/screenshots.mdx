@@ -3,6 +3,11 @@ title: Screenshots
 desc: Screenshots of the app
 ---
 
-![](../../assets/dashboard.png)
-![](../../assets/classroom-edit.png)
-![](../../assets/admin.png)
+import { Image } from 'astro:assets';
+import dashboard from '../../../assets/dashboard.png';
+import classroomEdit from '../../../assets/classroom-edit.png';
+import admin from '../../../assets/admin.png';
+
+<Image src={dashboard} alt="Dashboard" />
+<Image src={classroomEdit} alt="Classroom edit" />
+<Image src={admin} alt="Admin" />
