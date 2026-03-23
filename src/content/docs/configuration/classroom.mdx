@@ -123,8 +123,6 @@ If Classroom Manager doesn't appear or you get permission errors, check whether 
 ## Updating
 
 ```bash
-cd /opt/jupyter-classroom
-sudo git pull
-sudo /opt/tljh/hub/bin/pip install -r requirements.txt
+sudo /opt/tljh/hub/bin/pip install --upgrade jupyter-classroom
 sudo tljh-config reload hub
 ```
