@@ -10,7 +10,7 @@ import { Steps } from '@astrojs/starlight/components';
 1. ##### Install the package
 
     ```bash
-    sudo /opt/tljh/user/bin/pip install jupyter-classroom   
+    sudo /opt/tljh/hub/bin/pip install jupyter-classroom   
     ```
 
 3. ##### Create the JupyterHub config snippet
@@ -42,6 +42,7 @@ import { Steps } from '@astrojs/starlight/components';
                "read:users",
                "admin:servers",
                "admin:groups",
+               "admin:users",
                "read:groups",
                "list:groups",
            ],
@@ -55,18 +56,25 @@ import { Steps } from '@astrojs/starlight/components';
        },
    ]
 
-   # Pre-create the teachers group
-   # You may need to rename this to fit an OAuth group that you created
-   c.JupyterHub.load_groups = {
-       "teachers": [],
-   }
+   # Enable real-time collaboration in student servers
+   c.Spawner.args = ["--LabApp.collaborative=True"]
    ```
 
    **Important notes on the config:**
 
    - If TLJH's own config already defines `load_roles` or `load_groups` (or if you have other config snippets that do), you will get conflicts. JupyterHub does not merge list-based config across files -- the last assignment wins. If you have existing role/group config, you need to consolidate into a single file.
 
-4. ##### Reload JupyterHub
+4. ##### Enable Real-Time Collaboration
+
+   Install `jupyter-collaboration` in the **singleuser** environment (not the hub environment) so that teachers can co-edit notebooks with students:
+
+   ```bash
+   sudo /opt/tljh/user/bin/pip install jupyter-collaboration
+   ```
+
+   This enables the "Join" button in the Classroom Manager dashboard. When a teacher clicks "Join" on a running student server, they open the student's JupyterLab with real-time collaborative editing.
+
+5. ##### Reload JupyterHub
 
    ```bash
    sudo tljh-config reload hub
@@ -74,7 +82,7 @@ import { Steps } from '@astrojs/starlight/components';
 
    This restarts JupyterHub with the new config. Running user servers are not affected.
 
-5. ##### Verify the service is running
+6. ##### Verify the service is running
 
    Navigate to:
 
@@ -83,18 +91,6 @@ import { Steps } from '@astrojs/starlight/components';
    ```
 
    You should be redirected through JupyterHub OAuth and land on the Classroom Manager dashboard.
-
-6. ##### Add teachers to the `teachers` group
-
-   Users in the `teachers` group get admin-level access within Classroom Manager. Add them via the JupyterHub Admin panel (Admin > Groups), or by editing the `load_groups` dict in the config snippet:
-
-   ```python
-   c.JupyterHub.load_groups = {
-       "teachers": ["teacher1", "teacher2"],
-   }
-   ```
-
-   Then reload again: `sudo tljh-config reload hub`
 
 </Steps>
 

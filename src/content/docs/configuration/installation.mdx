@@ -87,6 +87,32 @@ Firstly, choose which operating system you'll be running JupyterHub on.
         4. ##### Configure networking
 
             With our TLJH instance authenticated, we now need to allow students & staff across the network to connect to this device.
+
+            Since JupyterHub runs inside WSL, you need to forward traffic from Windows to the WSL VM. Run these commands in **PowerShell as administrator**:
+
+            <Steps>
+                1. Get your WSL IP address
+
+                    ```powershell
+                    wsl hostname -I
+                    ```
+
+                2. Set up port forwarding (replace `<WSL_IP>` with the IP from the previous step)
+
+                    ```powershell
+                    netsh interface portproxy add v4tov4 listenport=80 listenaddress=0.0.0.0 connectport=80 connectaddress=<WSL_IP>
+                    ```
+
+                3. Allow inbound traffic through the firewall (only needed once)
+
+                    ```powershell
+                    New-NetFirewallRule -DisplayName "JupyterHub" -Direction Inbound -LocalPort 80 -Protocol TCP -Action Allow
+                    ```
+            </Steps>
+
+            :::caution
+            The WSL IP address can change after a reboot. If JupyterHub becomes unreachable from other devices, re-run steps 1 and 2 to update the port forwarding.
+            :::
   </TabItem>
   <TabItem label="Linux" icon="linux">
     <Steps>
