@@ -1,0 +1,168 @@
+---
+title: Serving over HTTPS on a domain
+desc: Put TLJH behind a real hostname and serve it on HTTPS, including with an internal-CA certificate
+---
+
+import { Steps, Tabs, TabItem, Aside, LinkCard } from '@astrojs/starlight/components';
+import { Kbd } from 'starlight-kbd/components';
+
+By default TLJH listens on plain HTTP at `http://<your-ip>`. For a real classroom you want a memorable URL like `https://jupyter.yourschool.org.uk` with a valid TLS certificate, so:
+
+- Browsers don't show scary warnings when students log in.
+- OAuth providers can use a stable callback URL.
+- You can run a real heartbeat against `/hub/health` rather than `-k` against an IP.
+
+TLJH ships with [Traefik](https://traefik.io/) baked in as its reverse proxy, and `tljh-config` exposes the relevant TLS settings without you needing to touch Traefik directly.
+
+There are two paths depending on where your certificate comes from. Pick one.
+
+<Tabs>
+  <TabItem label="Public CA (Let's Encrypt)" icon="rocket">
+
+If your hub will be on the public internet on a domain you control, TLJH can do the whole certificate dance for you with Let's Encrypt.
+
+<Steps>
+1. **Point a public DNS A record at your host's public IP**
+
+    e.g. `jupyter.yourschool.org.uk → 203.0.113.42`. Wait for it to resolve before continuing.
+
+2. **Open ports 80 and 443**
+
+    Both are required: 80 for the ACME HTTP-01 challenge, 443 for the actual hub.
+
+3. **Tell TLJH to enable HTTPS**
+
+    ```bash
+    sudo tljh-config set https.enabled true
+    sudo tljh-config set https.letsencrypt.email you@yourschool.org.uk
+    sudo tljh-config add-item https.letsencrypt.domains jupyter.yourschool.org.uk
+    sudo tljh-config reload proxy
+    ```
+
+    Traefik will request a certificate within ~30 seconds, store it under `/opt/tljh/state/`, and renew it automatically before expiry.
+
+4. **Verify**
+
+    ```bash
+    curl -I https://jupyter.yourschool.org.uk/
+    # expect: HTTP/2 302 (redirect to /hub/login)
+    ```
+</Steps>
+
+  </TabItem>
+  <TabItem label="Internal CA (school-issued cert)" icon="puzzle">
+
+For LAN-only deployments — e.g. a hub that lives on `jupyter.yourschool.org.uk` resolving to an internal IP — your school's IT will usually issue you a certificate from the school's internal Certificate Authority. The setup is similar but you skip ACME entirely.
+
+<Aside type="caution" title="Don't mix the two paths">
+If you set `https.letsencrypt.email`, TLJH will try to renew the cert via ACME on every restart and overwrite your manual files. With an internal cert, leave `letsencrypt.*` unset.
+</Aside>
+
+<Steps>
+1. **Get the cert and key from IT**
+
+    You'll typically receive two files:
+
+    - `fullchain.pem` — your cert plus the issuing intermediate(s)
+    - `privkey.pem` — the private key
+
+    Drop them somewhere only root can read:
+
+    ```bash
+    sudo install -m 0600 -o root -g root fullchain.pem /etc/ssl/jupyter.crt
+    sudo install -m 0600 -o root -g root privkey.pem /etc/ssl/jupyter.key
+    ```
+
+2. **Tell TLJH to use them**
+
+    ```bash
+    sudo tljh-config set https.enabled true
+    sudo tljh-config set https.tls.cert /etc/ssl/jupyter.crt
+    sudo tljh-config set https.tls.key /etc/ssl/jupyter.key
+    sudo tljh-config reload proxy
+    ```
+
+3. **Verify the cert Traefik is actually serving**
+
+    ```bash
+    sudo ss -tlnp | grep -E ':(80|443) '
+    # expect: 0.0.0.0:443 listening as traefik
+
+    openssl s_client -connect localhost:443 -servername jupyter.yourschool.org.uk </dev/null 2>&1 \
+      | grep -A 3 "Subject:"
+    # expect: CN=jupyter.yourschool.org.uk, issued by your school's internal CA
+    ```
+
+4. **Renew manually when the cert is reissued**
+
+    With an internal CA there's no auto-renewal. When IT reissues the cert (typically yearly), replace the two files and reload:
+
+    ```bash
+    sudo install -m 0600 -o root -g root new-fullchain.pem /etc/ssl/jupyter.crt
+    sudo install -m 0600 -o root -g root new-privkey.pem  /etc/ssl/jupyter.key
+    sudo tljh-config reload proxy
+    ```
+</Steps>
+
+**Internal-CA gotchas**
+
+- Browsers outside your school network won't trust the cert. That's fine on a LAN-only hub — domain-joined or MDM-managed devices already have the school root CA in their trust store. Personal devices need to import it manually.
+- If you later move the hub to the public internet, switch to Let's Encrypt rather than carrying the internal cert with you.
+
+</TabItem>
+</Tabs>
+
+## Update OAuth callback URLs
+
+If you've configured an [OAuth provider](/configuration/access/), update its redirect URI to match the new HTTPS host. Microsoft Entra, Google and GitHub all let you swap callback URLs in-place; you don't need to recreate the app:
+
+```bash
+sudo tljh-config set auth.<Provider>OAuthenticator.oauth_callback_url \
+  'https://jupyter.yourschool.org.uk/hub/oauth_callback'
+sudo tljh-config reload hub
+```
+
+Replace `<Provider>` with `AzureAd`, `Google`, `GitHub` or `Generic` as appropriate.
+
+## Running on Windows / WSL
+
+If your TLJH is on a Windows host with WSL2, two extra things matter:
+
+<Steps>
+1. **Use mirrored networking mode**
+
+    In `~/.wslconfig` on the Windows host (the file may not exist; create it):
+
+    ```ini title="C:\\Users\\<you>\\.wslconfig"
+    [wsl2]
+    networkingMode=mirrored
+    ```
+
+    Then `wsl --shutdown` and reopen WSL. The Linux side now binds directly to your machine's LAN IP, so `jupyter.yourschool.org.uk` (an A record pointing at that IP) just works — no portproxy, no NAT.
+
+2. **Open the Windows firewall**
+
+    PowerShell as administrator:
+
+    ```powershell
+    New-NetFirewallRule -DisplayName "TLJH HTTPS" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow -Profile Any
+    New-NetFirewallRule -DisplayName "TLJH HTTP"  -Direction Inbound -Protocol TCP -LocalPort 80  -Action Allow -Profile Any
+    ```
+</Steps>
+
+## Verify end-to-end
+
+From a *separate* device on the same network as the hub:
+
+```powershell
+# Windows
+curl.exe -I https://jupyter.yourschool.org.uk
+Test-NetConnection jupyter.yourschool.org.uk -Port 443
+```
+
+```bash
+# macOS / Linux
+curl -I https://jupyter.yourschool.org.uk
+```
+
+You should see `HTTP/2 302` redirecting to `/hub/login`. If you get a connection refused, check the host's firewall first; if the cert is unrecognised, check whether the device has the school root CA installed.
