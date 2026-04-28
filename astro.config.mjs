@@ -40,7 +40,8 @@ export default defineConfig({
 						],
 					},
 					'configuration/lessons',
-					'configuration/classroom'
+					'configuration/classroom',
+					'configuration/monitoring'
 				],
 				},
 				{
