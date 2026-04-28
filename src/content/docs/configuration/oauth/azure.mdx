@@ -3,7 +3,7 @@ title: Configure Microsoft Azure OAuth
 desc: Configuring Sign in with Microsoft
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { Steps, Aside } from '@astrojs/starlight/components';
 
 This requires an app registration in your school's Microsoft Entra ID (Azure AD) tenant. You'll likely need IT involvement for that part.
 
@@ -36,16 +36,27 @@ This requires an app registration in your school's Microsoft Entra ID (Azure AD)
         sudo tljh-config set auth.AzureAdOAuthenticator.tenant_id '<tenant-id>'
         sudo tljh-config set auth.AzureAdOAuthenticator.oauth_callback_url 'http://<your-ip>/hub/oauth_callback'
 
-        # Allow only users from your tenant
-        sudo tljh-config set auth.AzureAdOAuthenticator.allowed_organizations '["<tenant-id>"]'
+        # Use the user principal name as the JupyterHub username
+        sudo tljh-config set auth.AzureAdOAuthenticator.username_claim upn
+
+        # Allow any user in the tenant to log in (simplest for classroom use)
+        sudo tljh-config set auth.AzureAdOAuthenticator.allow_all true
 
         # Set yourself as admin using your Microsoft email
-        sudo tljh-config set auth.AzureAdOAuthenticator.admin_users '["leo@wellingtoncollege.org.uk"]'
+        sudo tljh-config set auth.AzureAdOAuthenticator.admin_users '["leo@yourschool.org.uk"]'
 
         sudo tljh-config reload hub
         ```
 
         Replace the email with whatever your actual school Microsoft account is.
+
+        <Aside type="tip" title="Why `username_claim upn`?">
+        The default `email` claim isn't always present in tokens issued by school tenants — Entra ID often only includes `upn` (User Principal Name) and `unique_name`. Setting `username_claim upn` is the most reliable choice: every Entra user has one, and it's stable across renames.
+        </Aside>
+
+        <Aside type="caution" title="`allowed_organizations` was removed">
+        Older guides recommend `allowed_organizations`. That trait was dropped in `oauthenticator` 17.3.0+. Use `allow_all true` for classroom-wide access, or `allowed_groups` (with Entra group object IDs) for finer control — see step 4 below.
+        </Aside>
 
     4. **Restrict to specific groups (optional)**
 
