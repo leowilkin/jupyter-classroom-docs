@@ -42,7 +42,8 @@ export default defineConfig({
 					'configuration/lessons',
 					'configuration/classroom',
 					'configuration/monitoring',
-					'configuration/betterstack'
+					'configuration/betterstack',
+					'configuration/auto-cleaner'
 				],
 				},
 				{

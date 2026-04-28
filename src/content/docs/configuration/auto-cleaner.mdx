@@ -1,0 +1,284 @@
+---
+title: Auto-cleaning runaway notebooks
+desc: Stop a single student's giant pasted blob or generated output from taking the whole hub down
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+A pattern you'll see over and over running a classroom hub: one student writes a `for` loop that prints 50 MB into a single cell, or pastes a huge dataset directly into the notebook source. The next time anything tries to load that notebook — Jupyter's autosave, JupyterLab opening it, even a `git status` from a backup script — it eats RAM proportional to the cell size, and the rest of the class slows to a crawl.
+
+The fix isn't to argue with students about copy-paste discipline. It's to install a small janitor that runs every couple of minutes, scans `/home/jupyter-*/**/*.ipynb`, and replaces oversized cell sources with a placeholder note. The notebook stays openable, the student sees what happened, and the hub stays responsive.
+
+<Aside type="tip" title="Tune the threshold to your students">
+The default 50 KB-per-cell limit catches paste-bombs without disturbing legitimate code. Long Markdown cells, complex SymPy expressions or generated tables can legitimately push past 10 KB; you'll want to bump the limit if your curriculum involves a lot of generated output.
+</Aside>
+
+## How it works
+
+- A Python script (`/usr/local/bin/jupyter-poison-cleaner.py`) walks every notebook under `/home/jupyter-*/`.
+- For files larger than 1 MB on disk, it parses the JSON and looks at each code cell's source length.
+- Any cell over `CELL_SRC_LIMIT` (default 50,000 bytes) has its source replaced with a short comment explaining what happened, including the first 200 chars of what was removed for forensic purposes. Outputs and execution counts are cleared on the same cell.
+- A structured log line (`JUPYTER_CLEANUP user=… file=… cell_index=… removed_bytes=… snippet=…`) goes to the journal, where Vector picks it up and ships it to [BetterStack](/configuration/betterstack/).
+- A Prometheus textfile counter (`jupyter_cleanup_files_total{user="…"}`) tracks how often each user has triggered a cleanup, viewable in [Grafana](/configuration/monitoring/).
+- File ownership is restored to the original user so JupyterLab doesn't get confused about who owns what.
+
+It's idempotent: a notebook that's been cleaned has no cells over the limit, so on the next pass it's a no-op.
+
+## Install
+
+<Steps>
+1. **Drop in the script**
+
+    ```bash
+    sudo nano /usr/local/bin/jupyter-poison-cleaner.py
+    ```
+
+    ```python title="/usr/local/bin/jupyter-poison-cleaner.py"
+    #!/usr/bin/env python3
+    """
+    Scan /home/jupyter-*/ for .ipynb files with cells whose source exceeds the limit.
+    Replace the offending cell sources with a placeholder, back up the original,
+    emit a structured journald event, and bump a Prometheus textfile counter.
+
+    Idempotent: a cleaned notebook on the next pass has no oversized cells, so it's a no-op.
+    """
+    from __future__ import annotations
+    import glob
+    import json
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    CELL_SRC_LIMIT = 50_000           # bytes — anything larger = paste-bomb
+    SNIPPET_LEN = 200                 # chars of removed content to keep for forensics
+    METRIC_FILE = "/var/lib/prometheus/node-exporter/textfile_collector/jupyter_cleanup.prom"
+    METRIC_TMP  = METRIC_FILE + ".tmp"
+
+
+    def load_counter() -> dict[str, int]:
+        state: dict[str, int] = {}
+        if not os.path.exists(METRIC_FILE):
+            return state
+        for line in open(METRIC_FILE):
+            if line.startswith("jupyter_cleanup_files_total{"):
+                try:
+                    user = line.split('user="', 1)[1].split('"', 1)[0]
+                    val = int(float(line.rsplit(" ", 1)[1].strip()))
+                    state[user] = val
+                except Exception:
+                    pass
+        return state
+
+
+    def write_counter(state: dict[str, int]) -> None:
+        os.makedirs(os.path.dirname(METRIC_FILE), exist_ok=True)
+        with open(METRIC_TMP, "w") as fh:
+            fh.write("# HELP jupyter_cleanup_files_total Notebooks auto-cleaned by jupyter-poison-cleaner\n")
+            fh.write("# TYPE jupyter_cleanup_files_total counter\n")
+            for user, n in sorted(state.items()):
+                fh.write(f'jupyter_cleanup_files_total{{user="{user}"}} {n}\n')
+        os.replace(METRIC_TMP, METRIC_FILE)
+
+
+    def emit_event(fields: dict[str, str]) -> None:
+        """Print to stdout — systemd captures it under our unit, Vector picks it up.
+        Using systemd-cat creates a transient unit name without '.service', which
+        breaks Vector's include_units filter. Plain print() inherits the calling
+        service's _SYSTEMD_UNIT correctly.
+        """
+        msg_parts = [f"{k}={v!r}" for k, v in fields.items()]
+        print("JUPYTER_CLEANUP " + " ".join(msg_parts), flush=True)
+
+
+    def truncate_oversized(path: Path) -> tuple[int, list[dict]]:
+        """Returns (cells_truncated, list_of_truncations). Mutates the file in place."""
+        try:
+            with open(path) as fh:
+                nb = json.load(fh)
+        except Exception:
+            return 0, []
+        truncations = []
+        for i, cell in enumerate(nb.get("cells", [])):
+            if cell.get("cell_type") != "code":
+                continue
+            src = "".join(cell.get("source", []))
+            if len(src) <= CELL_SRC_LIMIT:
+                continue
+            snippet = src[:SNIPPET_LEN].replace("\n", " ")
+            truncations.append({
+                "cell_index": i,
+                "removed_bytes": len(src),
+                "snippet": snippet,
+            })
+            cell["source"] = [
+                f"# === CELL CONTENTS REMOVED BY AUTO-CLEANER (was {len(src):,} bytes) ===\n",
+                f"# Cleaned at: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n",
+                f"# First 200 chars of removed content:\n",
+                f"# {snippet[:160]}\n",
+            ]
+            cell["outputs"] = []
+            cell["execution_count"] = None
+        if not truncations:
+            return 0, []
+        with open(path, "w") as fh:
+            json.dump(nb, fh, indent=1)
+            fh.write("\n")
+        # Restore ownership to whoever owns the parent home dir
+        try:
+            for parent in [path] + list(path.parents):
+                if parent.parent.as_posix() == "/home":
+                    st = parent.stat()
+                    os.chown(path, st.st_uid, st.st_gid)
+                    break
+        except Exception:
+            pass
+        return len(truncations), truncations
+
+
+    def main() -> int:
+        counter = load_counter()
+        total_cleaned = 0
+        for ipynb in glob.glob("/home/jupyter-*/**/*.ipynb", recursive=True):
+            if ".autoclean." in ipynb or ipynb.endswith(".bak"):
+                continue
+            path = Path(ipynb)
+            try:
+                size = path.stat().st_size
+            except FileNotFoundError:
+                continue
+            # Cheap pre-filter: only inspect files > 1 MB
+            if size < 1_000_000:
+                continue
+            n_truncated, details = truncate_oversized(path)
+            if n_truncated == 0:
+                continue
+            total_cleaned += 1
+            parts = ipynb.split("/")
+            user = "unknown"
+            for p in parts:
+                if p.startswith("jupyter-"):
+                    user = p[len("jupyter-"):].split("@")[0].split("+")[0]
+                    break
+            for d in details:
+                emit_event({
+                    "user": user,
+                    "file": str(path),
+                    "original_size": size,
+                    "cell_index": d["cell_index"],
+                    "removed_bytes": d["removed_bytes"],
+                    "snippet": d["snippet"],
+                })
+            counter[user] = counter.get(user, 0) + n_truncated
+        write_counter(counter)
+        if total_cleaned:
+            print(f"cleaned {total_cleaned} file(s)")
+        return 0
+
+
+    if __name__ == "__main__":
+        sys.exit(main())
+    ```
+
+    ```bash
+    sudo chmod +x /usr/local/bin/jupyter-poison-cleaner.py
+    ```
+
+2. **Wrap it in a systemd timer**
+
+    The service is `oneshot` and intentionally niced down — we don't want the cleanup itself competing for resources during a lesson.
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyter-poison-cleaner.service
+    ```
+
+    ```ini title="/etc/systemd/system/jupyter-poison-cleaner.service"
+    [Unit]
+    Description=Auto-clean oversized cells from user notebooks
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/local/bin/jupyter-poison-cleaner.py
+    Nice=10
+    IOSchedulingClass=idle
+    ```
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyter-poison-cleaner.timer
+    ```
+
+    ```ini title="/etc/systemd/system/jupyter-poison-cleaner.timer"
+    [Unit]
+    Description=Run jupyter-poison-cleaner every 2 minutes
+
+    [Timer]
+    OnBootSec=2min
+    OnUnitActiveSec=2min
+    AccuracySec=30s
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    ```
+
+    Enable:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now jupyter-poison-cleaner.timer
+    ```
+
+3. **Verify it ran**
+
+    ```bash
+    sudo systemctl start jupyter-poison-cleaner.service
+    journalctl -u jupyter-poison-cleaner.service -n 20 --no-pager
+    ```
+
+    On a healthy hub with no paste-bombs, you'll see no output. The first time it actually cleans a file you'll see one `JUPYTER_CLEANUP …` line per truncated cell.
+
+4. **Confirm metrics are flowing**
+
+    ```bash
+    cat /var/lib/prometheus/node-exporter/textfile_collector/jupyter_cleanup.prom
+    ```
+
+    Once the script has cleaned at least one cell, you should see something like:
+
+    ```text
+    # HELP jupyter_cleanup_files_total Notebooks auto-cleaned by jupyter-poison-cleaner
+    # TYPE jupyter_cleanup_files_total counter
+    jupyter_cleanup_files_total{user="alice"} 4
+    ```
+
+    In Prometheus or Grafana that's queryable as `jupyter_cleanup_files_total` — useful as a Grafana panel or a BetterStack alert ("any user trips this counter twice in a lesson").
+</Steps>
+
+## Tuning
+
+The numbers worth knowing:
+
+| Constant | Default | What to change it for |
+|---|---|---|
+| `CELL_SRC_LIMIT` | `50_000` (bytes) | Lower if you want to be stricter; raise if your curriculum legitimately produces big cells (e.g. machine-generated tables, long Markdown, encoded data). |
+| `SNIPPET_LEN` | `200` (chars) | How much of the removed content to keep for forensics. The full thing isn't logged; only the first N chars. |
+| Timer `OnUnitActiveSec` | `2min` | How often to scan. Two minutes is fast enough that a paste-bomb is gone before the student reloads JupyterLab. |
+| File-size pre-filter | `1_000_000` (bytes) | Only `.ipynb` files larger than this are even opened. Smaller is more conservative; larger is faster but might miss a small file with one big cell. |
+
+## When you actively need to disable it
+
+- **Recovering a notebook from before a cleanup**: the cleaner mutates files in-place rather than keeping side-by-side `.bak` files (the journald event is the audit trail). If you need to recover the actual content, restore from a [backup](/configuration/installation/) or from the user's hub home directory snapshot. Disable the timer first so it doesn't immediately re-clean the restored file:
+
+    ```bash
+    sudo systemctl stop jupyter-poison-cleaner.timer
+    sudo systemctl disable jupyter-poison-cleaner.timer
+    ```
+
+- **A legitimate file is being cleaned**: usually means `CELL_SRC_LIMIT` is too low. Raise it, then re-enable the timer.
+
+## Pairs nicely with
+
+<LinkCard title="BetterStack uptime &amp; logs" href="/configuration/betterstack/" />
+<LinkCard title="Monitoring with Grafana" href="/configuration/monitoring/" />
