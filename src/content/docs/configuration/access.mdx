@@ -3,9 +3,23 @@ title: Controlling access
 desc: Control the availability of components across your JupyterHub to suit a classroom
 ---
 
-import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+import { LinkCard, CardGrid, Aside } from '@astrojs/starlight/components';
 
 We now want to begin limiting our JupyterHub instance so students don't over-use resources, or create security vulnerabilities.
+
+<Aside type="tip" title="`tljh-config set` syntax">
+Pass values as positional arguments — no `=`, no shell-quoted values around plain strings:
+
+```bash
+# wrong — produces "unrecognized arguments: email"
+sudo tljh-config set auth.AzureAdOAuthenticator.username_claim = "email"
+
+# right
+sudo tljh-config set auth.AzureAdOAuthenticator.username_claim email
+```
+
+Quotes are only needed when a value contains spaces or shell metacharacters; for normal claim names, paths and booleans, leave them off.
+</Aside>
 
 ## Authentication
 
@@ -93,3 +107,14 @@ sudo tljh-config reload hub
 ```
 
 Students just click their link again to restart, and their data auto-saves every 120 seconds.
+
+## What to do once it's running
+
+Once your hub is up and accepting student logins, the next things worth setting up are off-host alerting, monitoring, and the auto-cleaner that catches paste-bomb notebooks before they take everything down:
+
+<CardGrid>
+    <LinkCard title="Monitoring with Grafana" href="/configuration/monitoring/" />
+    <LinkCard title="BetterStack uptime &amp; logs" href="/configuration/betterstack/" />
+    <LinkCard title="Auto-cleaning runaway notebooks" href="/configuration/auto-cleaner/" />
+    <LinkCard title="Serving over HTTPS on a domain" href="/configuration/https/" />
+</CardGrid>
