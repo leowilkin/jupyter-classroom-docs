@@ -1,0 +1,177 @@
+---
+title: Bulk-importing students from a spreadsheet
+desc: Add a whole year-group's worth of students and assign them to classroom groups in one pass via the JupyterHub admin API
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+
+When a new term starts you don't want to add 180 students one at a time through the [Classroom Manager](/configuration/classroom/) UI. JupyterHub has an admin REST API that does exactly what you need, and a small Python script can drive it from a CSV or Excel export of your student list.
+
+This guide assumes:
+
+- You've already set up [Jupyter Classroom](/configuration/classroom/) and have at least one group created.
+- You have a spreadsheet with at least two columns: a student username (we'll use email here) and a set / group code.
+- You have an admin JupyterHub account.
+
+<Aside type="tip" title="Idempotent by design">
+The script below will skip users that already exist and groups that already have the right members. You can re-run it after every roster change without thinking.
+</Aside>
+
+## Generate an admin API token
+
+<Steps>
+1. **From the hub UI**
+
+    Sign in as an admin and go to `https://<your-hub>/hub/token`. Click **Request new API token**, give it a label (e.g. `bulk-import`), and copy it. Treat it like a password.
+
+2. **Or from the command line**
+
+    ```bash
+    sudo /opt/tljh/hub/bin/jupyterhub token <admin-username>
+    ```
+
+    Prints a token to stdout.
+</Steps>
+
+## Prepare your spreadsheet
+
+Save it as CSV with these columns (header row required):
+
+```csv title="students.csv"
+username,group
+alice@yourschool.org.uk,10AGCCh1R
+bob@yourschool.org.uk,10AGCCh1R
+charlie@yourschool.org.uk,10AGCCh2R
+```
+
+Usernames should match whatever your [authenticator](/configuration/access/) emits — typically the lowercased email for Microsoft / Google OAuth, or the GitHub login for GitHub OAuth.
+
+## Import script
+
+Drop this anywhere on a machine that can reach the hub:
+
+```python title="bulk-import.py"
+"""
+Bulk-create JupyterHub users and assign them to existing groups from a CSV.
+
+Usage:
+    HUB_URL=https://jupyter.yourschool.org.uk \
+    HUB_TOKEN=<admin-api-token> \
+    python bulk-import.py students.csv
+"""
+import csv
+import os
+import sys
+from collections import defaultdict
+from urllib.parse import urljoin
+
+import requests
+
+HUB_URL = os.environ["HUB_URL"].rstrip("/") + "/"
+HEADERS = {"Authorization": f"token {os.environ['HUB_TOKEN']}"}
+
+
+def api(path):
+    return urljoin(HUB_URL, "hub/api/") + path.lstrip("/")
+
+
+def list_users():
+    r = requests.get(api("users"), headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return {u["name"] for u in r.json()}
+
+
+def list_groups():
+    r = requests.get(api("groups"), headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return {g["name"]: set(g["users"]) for g in r.json()}
+
+
+def create_user(name):
+    r = requests.post(api(f"users/{name}"), headers=HEADERS, timeout=30)
+    if r.status_code not in (201, 409):  # 409 = already exists
+        r.raise_for_status()
+
+
+def add_to_group(group, names):
+    if not names:
+        return
+    r = requests.post(
+        api(f"groups/{group}/users"),
+        headers=HEADERS,
+        json={"users": list(names)},
+        timeout=30,
+    )
+    r.raise_for_status()
+
+
+def main(csv_path):
+    by_group = defaultdict(set)
+    with open(csv_path, newline="") as fh:
+        for row in csv.DictReader(fh):
+            by_group[row["group"].strip()].add(row["username"].strip().lower())
+
+    existing_users = list_users()
+    existing_groups = list_groups()
+
+    for group, members in sorted(by_group.items()):
+        if group not in existing_groups:
+            print(f"!! group {group!r} does not exist on the hub — skipping {len(members)} student(s)")
+            continue
+
+        new_users = members - existing_users
+        for u in sorted(new_users):
+            create_user(u)
+            print(f"   created user {u}")
+
+        not_in_group = members - existing_groups[group]
+        if not_in_group:
+            add_to_group(group, not_in_group)
+            print(f"   added {len(not_in_group)} student(s) to {group}")
+        else:
+            print(f"   {group}: already up to date")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(__doc__)
+        sys.exit(2)
+    main(sys.argv[1])
+```
+
+Run it:
+
+```bash
+HUB_URL=https://jupyter.yourschool.org.uk \
+HUB_TOKEN=<paste-token-here> \
+python bulk-import.py students.csv
+```
+
+Expected output for a fresh import:
+
+```text
+   created user alice@yourschool.org.uk
+   created user bob@yourschool.org.uk
+   added 2 student(s) to 10AGCCh1R
+   created user charlie@yourschool.org.uk
+   added 1 student(s) to 10AGCCh2R
+```
+
+Re-run it after editing the CSV and you'll see `already up to date` lines for the groups that haven't changed.
+
+## What the script does *not* do
+
+- **Create the groups themselves.** Make those in the [Classroom Manager](/configuration/classroom/) first, then run this. Groups carry teacher metadata (`.properties.teacher`) which you typically set manually anyway.
+- **Remove students.** Removing students from a group needs `DELETE /hub/api/groups/<name>/users` with the same body shape; we deliberately don't auto-prune in case the CSV is incomplete.
+- **Provision home directories.** That happens lazily when a student logs in for the first time.
+
+## If you have an Excel file rather than CSV
+
+Convert it once with `pandas`:
+
+```python
+import pandas as pd
+pd.read_excel("students.xlsx").to_csv("students.csv", index=False)
+```
+
+…or just **File → Save As → CSV** in Excel.
