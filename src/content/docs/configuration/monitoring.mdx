@@ -1,0 +1,387 @@
+---
+title: Monitoring with Grafana
+desc: Add Prometheus + Grafana so you can see RAM, CPU, disk and per-user metrics for your TLJH instance
+---
+
+import { Steps, Code, LinkCard, Aside } from '@astrojs/starlight/components';
+
+Once you've got students using your hub regularly, the question stops being "is it up?" and starts being "why did it slow down at 14:30 in lesson 3?". This page sets up a self-hosted **Prometheus + Grafana** stack on the same box as TLJH, plus a small custom collector so you can see per-student memory, CPU, disk and process counts.
+
+By the end of this page you'll have:
+
+- Prometheus scraping the host (CPU/RAM/disk), JupyterHub itself, and a per-user collector
+- Grafana on `http://localhost:3000` with dashboards for the whole stack
+- Everything bound to localhost, so you can SSH-tunnel in rather than expose another public port
+
+<Aside type="caution" title="Resource cost">
+On a hub with ~30 students, the full stack uses about 250 MB RAM and a few percent CPU. If your TLJH host is already memory-constrained, deploy Grafana on a separate machine and only run Prometheus + node-exporter here.
+</Aside>
+
+## Install the packages
+
+<Steps>
+1. **Install Prometheus and node-exporter from apt**
+
+    ```bash
+    sudo apt update
+    sudo apt install -y prometheus prometheus-node-exporter apt-transport-https software-properties-common wget
+    ```
+
+2. **Add Grafana's apt repo and install**
+
+    ```bash
+    sudo mkdir -p /etc/apt/keyrings
+    wget -qO- https://apt.grafana.com/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+    sudo apt update
+    sudo apt install -y grafana
+    ```
+</Steps>
+
+## Configure node-exporter
+
+We want node-exporter to expose **systemd** metrics (so we can see the per-user `jupyter-<name>@<domain>.service` units), **cgroups** (so we get RAM/CPU per user), and a **textfile collector** directory we'll write our own metrics into later.
+
+<Steps>
+1. **Edit the defaults file**
+
+    ```bash
+    sudo nano /etc/default/prometheus-node-exporter
+    ```
+
+    Replace the `ARGS=` line with:
+
+    ```bash title="/etc/default/prometheus-node-exporter"
+    ARGS="--collector.textfile.directory=/var/lib/prometheus/node-exporter/textfile_collector --web.listen-address=127.0.0.1:9100 --collector.systemd --collector.systemd.unit-include=(jupyter-.*|.*\.service) --collector.processes --collector.cgroups --collector.cpu.info --collector.interrupts --collector.logind"
+    ```
+
+    Key flags:
+
+    - `--web.listen-address=127.0.0.1:9100` — only exposed to localhost
+    - `--collector.textfile.directory=...` — the directory we'll drop custom `.prom` files into
+    - `--collector.systemd` + `--collector.systemd.unit-include` — match `jupyter-*` user services so we can graph them
+    - `--collector.cgroups` — exposes per-cgroup memory/CPU, which is how TLJH's per-user limits are enforced
+
+2. **Make sure the textfile directory exists**
+
+    ```bash
+    sudo mkdir -p /var/lib/prometheus/node-exporter/textfile_collector
+    sudo chown prometheus:prometheus /var/lib/prometheus/node-exporter/textfile_collector
+    ```
+
+3. **Restart**
+
+    ```bash
+    sudo systemctl restart prometheus-node-exporter
+    sudo systemctl status prometheus-node-exporter --no-pager | head -15
+    ```
+</Steps>
+
+## Expose JupyterHub's own metrics
+
+JupyterHub publishes Prometheus metrics at `/hub/metrics`, but only authenticated callers with the `read:metrics` scope can read them. The cleanest way to do that on TLJH is to register a JupyterHub *service* that owns a token Prometheus can use.
+
+<Steps>
+1. **Create the config snippet**
+
+    ```bash
+    sudo nano /opt/tljh/config/jupyterhub_config.d/prometheus_service.py
+    ```
+
+    Paste:
+
+    ```python title="/opt/tljh/config/jupyterhub_config.d/prometheus_service.py"
+    import secrets, os, pathlib
+
+    # Generate the token once and persist it to disk so Prometheus can read it.
+    token_path = pathlib.Path("/opt/tljh/state/prometheus.token")
+    if not token_path.exists():
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(secrets.token_hex(32))
+        token_path.chmod(0o600)
+    PROM_TOKEN = token_path.read_text().strip()
+
+    c.JupyterHub.services.append({
+        "name": "prometheus",
+        "api_token": PROM_TOKEN,
+    })
+
+    c.JupyterHub.load_roles.append({
+        "name": "prometheus-reader",
+        "services": ["prometheus"],
+        "scopes": ["read:metrics"],
+    })
+    ```
+
+    <Aside type="tip" title="Why .append() and not =">
+    TLJH's own configuration already populates `c.JupyterHub.services` and `c.JupyterHub.load_roles`. JupyterHub does not merge list-valued config across files — assigning to either one with `=` will silently wipe TLJH's defaults. Always use `.append()`.
+    </Aside>
+
+2. **Reload the hub and grab the token**
+
+    ```bash
+    sudo tljh-config reload hub
+    sudo cat /opt/tljh/state/prometheus.token
+    ```
+
+    Copy that token — you'll paste it into Prometheus next.
+</Steps>
+
+## Configure Prometheus
+
+<Steps>
+1. **Edit the scrape config**
+
+    ```bash
+    sudo nano /etc/prometheus/prometheus.yml
+    ```
+
+    Replace the contents with:
+
+    ```yaml title="/etc/prometheus/prometheus.yml"
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets: ['127.0.0.1:9090']
+
+      - job_name: node
+        static_configs:
+          - targets: ['127.0.0.1:9100']
+
+      - job_name: jupyterhub
+        metrics_path: /hub/metrics
+        scheme: http
+        authorization:
+          credentials: "<paste-prometheus-token-here>"
+        static_configs:
+          - targets: ['127.0.0.1:15001']
+    ```
+
+    The Hub's REST API (including `/hub/metrics`) is bound to `127.0.0.1:15001` by TLJH. The `authorization.credentials` field is the token you just copied from `/opt/tljh/state/prometheus.token`.
+
+2. **Bind Prometheus to localhost** (optional but recommended)
+
+    Edit `/etc/default/prometheus` and set:
+
+    ```bash title="/etc/default/prometheus"
+    ARGS="--web.listen-address=127.0.0.1:9090"
+    ```
+
+3. **Restart and verify**
+
+    ```bash
+    sudo systemctl restart prometheus
+    curl -s http://127.0.0.1:9090/api/v1/targets | grep -oE '"health":"[a-z]+"'
+    ```
+
+    All three jobs should report `"health":"up"`. If `jupyterhub` is `down`, double-check the token and that `tljh-config reload hub` actually restarted the hub.
+</Steps>
+
+## Per-user metrics collector
+
+Out of the box, node-exporter's systemd collector tells you *whether* `jupyter-alice@example.org.service` is running, but not how much memory or disk that user is consuming. This small script fills the gap by reading the per-user cgroup properties via `systemctl show`, and writing them to a `.prom` file that node-exporter's textfile collector picks up.
+
+<Steps>
+1. **Create the collector script**
+
+    ```bash
+    sudo nano /usr/local/bin/jupyter-metrics
+    ```
+
+    Paste:
+
+    ```bash title="/usr/local/bin/jupyter-metrics"
+    #!/bin/bash
+    # Emit per-jupyter-user metrics for node-exporter textfile collector.
+    set -u
+    OUT="${1:-/var/lib/prometheus/node-exporter/textfile_collector/jupyter.prom}"
+    TMP="$OUT.tmp.$$"
+
+    {
+        echo "# HELP jupyter_user_memory_bytes Current memory consumption (cgroup MemoryCurrent)"
+        echo "# TYPE jupyter_user_memory_bytes gauge"
+        echo "# HELP jupyter_user_cpu_seconds_total Total CPU time consumed (CPUUsageNSec / 1e9)"
+        echo "# TYPE jupyter_user_cpu_seconds_total counter"
+        echo "# HELP jupyter_user_tasks Current number of tasks (PIDs) in the cgroup"
+        echo "# TYPE jupyter_user_tasks gauge"
+        echo "# HELP jupyter_user_disk_bytes Disk usage of the user's home directory"
+        echo "# TYPE jupyter_user_disk_bytes gauge"
+        echo "# HELP jupyter_user_running Whether the per-user service is currently running"
+        echo "# TYPE jupyter_user_running gauge"
+
+        # Match only real per-user services: jupyter-<name>@<domain>.service
+        systemctl list-units --no-pager --plain --no-legend --all --type=service 2>/dev/null \
+            | awk '$1 ~ /^jupyter-[^@]+@.*\.service$/ {print $1, $4}' \
+            | while read -r unit active; do
+                user="${unit#jupyter-}"
+                user="${user%%@*}"
+                running=0
+                [ "$active" = "running" ] && running=1
+                printf 'jupyter_user_running{user="%s"} %d\n' "$user" "$running"
+
+                if [ "$running" = "1" ]; then
+                    eval "$(systemctl show "$unit" -p MemoryCurrent -p CPUUsageNSec -p TasksCurrent 2>/dev/null | sed 's/=/="/' | sed 's/$/"/')"
+                    if [ -n "${MemoryCurrent:-}" ] && [ "$MemoryCurrent" != "[not set]" ]; then
+                        printf 'jupyter_user_memory_bytes{user="%s"} %s\n' "$user" "$MemoryCurrent"
+                    fi
+                    if [ -n "${CPUUsageNSec:-}" ] && [ "$CPUUsageNSec" != "[not set]" ]; then
+                        cpu_sec=$(awk "BEGIN { printf \"%.6f\", $CPUUsageNSec / 1000000000 }")
+                        printf 'jupyter_user_cpu_seconds_total{user="%s"} %s\n' "$user" "$cpu_sec"
+                    fi
+                    if [ -n "${TasksCurrent:-}" ] && [ "$TasksCurrent" != "[not set]" ]; then
+                        printf 'jupyter_user_tasks{user="%s"} %s\n' "$user" "$TasksCurrent"
+                    fi
+                fi
+
+                home="/home/jupyter-$user"
+                if [ -d "$home" ]; then
+                    size=$(du -sb "$home" 2>/dev/null | awk '{print $1}')
+                    if [ -n "$size" ]; then
+                        printf 'jupyter_user_disk_bytes{user="%s"} %s\n' "$user" "$size"
+                    fi
+                fi
+            done
+    } > "$TMP" && mv -f "$TMP" "$OUT"
+    ```
+
+    Make it executable:
+
+    ```bash
+    sudo chmod +x /usr/local/bin/jupyter-metrics
+    ```
+
+2. **Run it as a systemd timer**
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyter-metrics.service
+    ```
+
+    ```ini title="/etc/systemd/system/jupyter-metrics.service"
+    [Unit]
+    Description=Collect per-user JupyterHub metrics for prometheus
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/local/bin/jupyter-metrics
+    Nice=10
+    IOSchedulingClass=idle
+    ```
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyter-metrics.timer
+    ```
+
+    ```ini title="/etc/systemd/system/jupyter-metrics.timer"
+    [Unit]
+    Description=Run jupyter-metrics every minute
+
+    [Timer]
+    OnBootSec=30s
+    OnUnitActiveSec=60s
+    AccuracySec=5s
+
+    [Install]
+    WantedBy=timers.target
+    ```
+
+    Enable both:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now jupyter-metrics.timer
+    ```
+
+3. **Verify the metrics are flowing**
+
+    ```bash
+    cat /var/lib/prometheus/node-exporter/textfile_collector/jupyter.prom
+    ```
+
+    You should see one block per running user, e.g.:
+
+    ```text
+    jupyter_user_running{user="alice"} 1
+    jupyter_user_memory_bytes{user="alice"} 412938240
+    jupyter_user_cpu_seconds_total{user="alice"} 8.124000
+    jupyter_user_tasks{user="alice"} 14
+    jupyter_user_disk_bytes{user="alice"} 35892014
+    ```
+</Steps>
+
+## Configure Grafana
+
+<Steps>
+1. **Bind Grafana to localhost**
+
+    ```bash
+    sudo sed -i 's|^;http_addr =.*|http_addr = 127.0.0.1|' /etc/grafana/grafana.ini
+    ```
+
+    By default Grafana listens on `0.0.0.0:3000`. Binding to `127.0.0.1` means you'll only reach it via SSH tunnel — much safer than exposing yet another login screen on the public internet.
+
+2. **Start Grafana**
+
+    ```bash
+    sudo systemctl enable --now grafana-server
+    ```
+
+3. **Reach the UI**
+
+    From your laptop, SSH-tunnel port 3000:
+
+    ```bash
+    ssh -L 3000:127.0.0.1:3000 <user>@<your-tljh-host>
+    ```
+
+    Then open `http://localhost:3000` in a browser. Default login is `admin` / `admin` — Grafana will force you to change it on first login.
+
+4. **Add Prometheus as a data source**
+
+    UI → Connections → Data sources → Add data source → Prometheus.
+
+    - URL: `http://127.0.0.1:9090`
+    - Save & test.
+
+5. **Import dashboards**
+
+    UI → Dashboards → New → Import. Useful starting points:
+
+    - [JupyterHub dashboards](https://github.com/jupyterhub/grafana-dashboards) — clone the repo and import the JSON files in `dashboards/`
+    - [Node Exporter Full (#1860)](https://grafana.com/grafana/dashboards/1860-node-exporter-full/) — paste `1860` into the import-by-ID box
+
+    For your `jupyter_user_*` metrics, build a small custom dashboard with panels like:
+
+    - `topk(10, jupyter_user_memory_bytes)` → top 10 users by RAM
+    - `rate(jupyter_user_cpu_seconds_total[5m])` → CPU per user over time
+    - `sum(jupyter_user_running)` → live student count
+</Steps>
+
+## Verify the whole stack
+
+Quick checklist after everything is up:
+
+```bash
+systemctl is-active prometheus prometheus-node-exporter grafana-server jupyterhub jupyter-metrics.timer
+# expect: active for all five
+```
+
+```bash
+ss -tlnp | grep -E ':(3000|9090|9100|15001) '
+# expect: 127.0.0.1 on each — none should bind to 0.0.0.0
+```
+
+In the Grafana **Explore** view, query `jupyter_user_running` and you should see a series per active student.
+
+## What to monitor next
+
+This is the floor, not the ceiling. Once you've got the basics flowing:
+
+- Wire up alerts (Grafana → Alerting) for low free RAM, sustained high CPU, or per-user memory creeping toward your `limits.memory` cap.
+- Add the **BetterStack** integration to ship logs and a heartbeat off-host, so you find out the box died from somewhere other than the box itself.
+- Add the **auto-cleaner** so that when a student does paste a 12 MB blob into a notebook cell, it gets neutralised before it takes the hub down.
+
+<LinkCard title="Next: BetterStack uptime &amp; logs" href="/configuration/betterstack/" />
