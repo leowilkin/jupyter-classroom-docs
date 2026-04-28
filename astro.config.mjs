@@ -43,7 +43,8 @@ export default defineConfig({
 					'configuration/classroom',
 					'configuration/monitoring',
 					'configuration/betterstack',
-					'configuration/auto-cleaner'
+					'configuration/auto-cleaner',
+					'configuration/https'
 				],
 				},
 				{
