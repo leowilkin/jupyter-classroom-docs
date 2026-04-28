@@ -1,0 +1,183 @@
+---
+title: WSL hosting tips
+desc: Operational tips for running TLJH on a Windows machine via WSL2 — networking, disk, recovery
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+Running TLJH on a Windows host via WSL2 is the easiest way to set up a classroom JupyterHub when you don't have a Linux box to spare — the [installation guide](/configuration/installation/) covers the basic setup. Once you've been running it for a while you'll trip over a few WSL-specific things that aren't really TLJH problems but feel like it. This page collects them.
+
+## Mirrored networking mode
+
+By default, WSL2 runs Linux behind a NAT, so binding to port 443 inside WSL doesn't make port 443 reachable on your Windows machine's LAN IP. The fix is to switch WSL into **mirrored networking mode**, where Linux shares Windows' network interfaces directly.
+
+<Steps>
+1. **Edit `~/.wslconfig` on the Windows host**
+
+    The file may not exist; create it. It lives in your Windows user profile, e.g. `C:\Users\<you>\.wslconfig`.
+
+    ```ini title="C:\\Users\\<you>\\.wslconfig"
+    [wsl2]
+    networkingMode=mirrored
+    ```
+
+2. **Restart WSL**
+
+    ```powershell
+    wsl --shutdown
+    ```
+
+    Reopen WSL after a few seconds.
+
+3. **Verify**
+
+    Inside WSL:
+
+    ```bash
+    ip a show eth1 | grep 'inet '
+    ```
+
+    Should now show your machine's actual LAN IP, e.g. `inet 10.32.80.10/...`. From another machine on the network:
+
+    ```bash
+    ping <that-ip>
+    ```
+
+    Should respond.
+</Steps>
+
+With mirrored mode on, a DNS A record for `jupyter.yourschool.org.uk` pointing at your Windows host's IP will reach TLJH directly — no portproxy needed.
+
+<Aside type="caution" title="Side effect: occasional dmesg warnings">
+You may see lines like `netlink: 'No buffer space available'` in `dmesg`. These are usually harmless — a side-effect of mirrored mode handling many concurrent connections — and not the cause of any crash you're investigating.
+</Aside>
+
+## Cap WSL memory and swap
+
+WSL2 will happily eat all of your host's RAM if a student kicks off a runaway notebook. Cap it explicitly so Windows always has headroom:
+
+```ini title="C:\\Users\\<you>\\.wslconfig"
+[wsl2]
+networkingMode=mirrored
+memory=16GB
+swap=8GB
+```
+
+Pick a memory ceiling that leaves Windows enough to function (typically 4–8 GB). Combined with TLJH's [per-user memory limit](/configuration/access/), this means a single student can't take down the whole machine.
+
+## Moving the WSL distro to another drive
+
+WSL2 stores each distro as a single growing `.vhdx` file under your Windows user profile on the C: drive. On a hub with a few dozen students it can grow to 30+ GB and exhaust C:. The solution is to relocate the entire distro to a roomier drive (D:, E:, etc.).
+
+<Aside type="caution" title="Take a snapshot first">
+This is a `wsl --export` then `wsl --unregister` then `wsl --import` sequence. The export step is your safety net — keep the resulting `.tar` file until you've verified the relocated distro works.
+</Aside>
+
+<Steps>
+1. **Find the distro name and current location**
+
+    ```powershell
+    wsl --list --verbose
+    ```
+
+    Note the exact `NAME` column value (`Ubuntu`, `Ubuntu-24.04`, etc.). The current `.vhdx` lives under `C:\Users\<you>\AppData\Local\Packages\CanonicalGroup...\LocalState\`.
+
+2. **Shut WSL down cleanly**
+
+    ```powershell
+    wsl --shutdown
+    ```
+
+3. **Export the distro to a tarball on the new drive**
+
+    ```powershell
+    mkdir E:\WSL\backup
+    wsl --export Ubuntu-24.04 E:\WSL\backup\ubuntu-24.04-backup.tar
+    ```
+
+    This takes a few minutes for a 30 GB distro. When it's done, check the file size is non-zero before continuing:
+
+    ```powershell
+    Get-Item E:\WSL\backup\ubuntu-24.04-backup.tar | Select Name, Length
+    ```
+
+4. **Unregister the old copy**
+
+    ```powershell
+    wsl --unregister Ubuntu-24.04
+    ```
+
+    This deletes the `.vhdx` from C: — that's the whole point.
+
+5. **Re-import on the new drive**
+
+    ```powershell
+    mkdir E:\WSL\Ubuntu-24.04
+    wsl --import Ubuntu-24.04 E:\WSL\Ubuntu-24.04 E:\WSL\backup\ubuntu-24.04-backup.tar --version 2
+    ```
+
+6. **Restore your default user**
+
+    `wsl --import` resets the default user to `root`. Set it back:
+
+    ```powershell
+    ubuntu2404 config --default-user lkmw
+    ```
+
+    (Replace `lkmw` with your actual Linux username and `ubuntu2404` with the launcher matching your distro — usually `ubuntu`, `ubuntu2204`, or `ubuntu2404`.)
+
+7. **Verify**
+
+    ```powershell
+    wsl -d Ubuntu-24.04 -- df -h /
+    wsl -d Ubuntu-24.04 -- systemctl is-active jupyterhub
+    ```
+
+    The root filesystem should report space on E:, and JupyterHub should be `active`.
+
+8. **Once you're confident, delete the backup tar**
+
+    ```powershell
+    Remove-Item E:\WSL\backup\ubuntu-24.04-backup.tar
+    ```
+
+    Don't do this until you've actually run a lesson on the relocated hub.
+</Steps>
+
+## C: drive full → WSL crash recovery
+
+If WSL crashes or refuses to start, the most common cause on a long-running TLJH host is C: hitting 0 bytes free.
+
+<Steps>
+1. **Check disk space**
+
+    ```powershell
+    Get-Volume -DriveLetter C
+    ```
+
+    Anything under a few hundred MB free is suspect.
+
+2. **Empty the recycle bin and run Windows disk cleanup**
+
+    `cleanmgr` → "Clean up system files".
+
+3. **If Docker Desktop is installed, move its WSL data off C:**
+
+    Docker Desktop UI → Settings → Resources → Advanced → "Disk image location" — point it at a non-C: drive.
+
+4. **Permanently relocate the TLJH distro**
+
+    See the section above. This is the only durable fix for a hub whose `.vhdx` keeps creeping back up.
+</Steps>
+
+The symptom you'll see in `dmesg` (once WSL is back up) is `hv_storvsc ... status: scsi 0x2` — that's the virtual SCSI layer reporting "out of space on the host" rather than anything wrong inside Linux.
+
+## Don't reinstall Ubuntu from the Microsoft Store after moving
+
+After `wsl --unregister`, the Microsoft Store entry for Ubuntu still exists but is empty. Resist the urge to "Install" from the Store — that creates a fresh distro on C: and brings the problem back. To launch the relocated distro, use:
+
+```powershell
+wsl -d Ubuntu-24.04
+```
+
+…or pin the matching launcher (`ubuntu2404.exe`) to your taskbar.
