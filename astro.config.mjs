@@ -41,7 +41,8 @@ export default defineConfig({
 					},
 					'configuration/lessons',
 					'configuration/classroom',
-					'configuration/monitoring'
+					'configuration/monitoring',
+					'configuration/betterstack'
 				],
 				},
 				{

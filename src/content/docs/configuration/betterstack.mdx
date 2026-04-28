@@ -1,0 +1,243 @@
+---
+title: BetterStack uptime & logs
+desc: Ship a heartbeat, logs and metrics off your TLJH host so you find out about outages from somewhere other than the box that's down
+---
+
+import { Steps, Aside, LinkCard } from '@astrojs/starlight/components';
+
+Self-hosted Grafana is great for "what's happening *now*", but if the host itself falls over, you can't open Grafana to find out why. This page wires TLJH up to [BetterStack](https://betterstack.com/) so that:
+
+- A 5-minute heartbeat tells BetterStack "I am alive" — and pages you if it stops.
+- Journald logs from JupyterHub, Traefik, Prometheus and our custom services are streamed to BetterStack via [Vector](https://vector.dev/), so you can search them after a crash.
+- Prometheus mirrors its metrics to BetterStack via `remote_write`, so dashboards and alerts survive even if the host is gone.
+
+You'll need a BetterStack account. The free tier is enough for one TLJH instance.
+
+<Aside type="caution" title="Treat the IDs and tokens as secrets">
+Each "source" you create in BetterStack has a unique URL and bearer token. Anyone with both can write log lines or metrics into your account. Keep them out of public repos and your shell history.
+</Aside>
+
+## 1. Uptime heartbeat
+
+This is the simplest piece: a tiny shell script curls JupyterHub's `/hub/health` endpoint, and on success pings a BetterStack heartbeat URL. If the script ever fails to ping (or pings the `/fail` variant), BetterStack alerts you.
+
+<Steps>
+1. **Create a heartbeat in BetterStack**
+
+    BetterStack dashboard → Uptime → Heartbeats → Create heartbeat.
+
+    - Name: `jupyterhub`
+    - Period: `5 minutes`
+    - Grace period: `2 minutes`
+
+    Copy the heartbeat URL — it looks like `https://uptime.betterstack.com/api/v1/heartbeat/<unique-id>`.
+
+2. **Drop the script in place**
+
+    ```bash
+    sudo nano /usr/local/bin/jupyterhub-heartbeat.sh
+    ```
+
+    ```bash title="/usr/local/bin/jupyterhub-heartbeat.sh"
+    #!/usr/bin/env bash
+    set -uo pipefail
+    HEARTBEAT='https://uptime.betterstack.com/api/v1/heartbeat/<your-heartbeat-id>'
+    HEALTH_URL='https://localhost/hub/health'
+
+    if curl -fsSk --max-time 10 "$HEALTH_URL" > /dev/null; then
+      curl -fsS --retry 3 --max-time 10 "$HEARTBEAT" > /dev/null
+    else
+      curl -fsS --retry 3 --max-time 10 "$HEARTBEAT/fail" > /dev/null
+      exit 1
+    fi
+    ```
+
+    The `-k` flag on the health-check is intentional: if you're using an internal-CA cert for `https://localhost`, the chain won't verify, but a connection to `localhost` is trustworthy by definition.
+
+    ```bash
+    sudo chmod +x /usr/local/bin/jupyterhub-heartbeat.sh
+    ```
+
+3. **Wrap it in a systemd timer**
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyterhub-heartbeat.service
+    ```
+
+    ```ini title="/etc/systemd/system/jupyterhub-heartbeat.service"
+    [Unit]
+    Description=JupyterHub health -> BetterStack heartbeat
+    After=network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=oneshot
+    ExecStart=/usr/local/bin/jupyterhub-heartbeat.sh
+    ```
+
+    ```bash
+    sudo nano /etc/systemd/system/jupyterhub-heartbeat.timer
+    ```
+
+    ```ini title="/etc/systemd/system/jupyterhub-heartbeat.timer"
+    [Unit]
+    Description=Run JupyterHub heartbeat every 5 minutes
+
+    [Timer]
+    OnBootSec=1min
+    OnUnitActiveSec=5min
+    AccuracySec=15s
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+    ```
+
+    Enable:
+
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now jupyterhub-heartbeat.timer
+    ```
+
+4. **Verify**
+
+    ```bash
+    sudo systemctl start jupyterhub-heartbeat.service
+    journalctl -u jupyterhub-heartbeat.service -n 5 --no-pager
+    ```
+
+    Within a couple of minutes, the BetterStack heartbeat row should turn green.
+</Steps>
+
+## 2. Logs via Vector
+
+Vector tails the systemd journal and ships interesting units to BetterStack as structured JSON. We deliberately keep the include-list narrow so we don't pay for noise.
+
+<Steps>
+1. **Create a "Logs" source in BetterStack**
+
+    BetterStack dashboard → Telemetry → Sources → Connect source → "Vector".
+
+    Note the **ingesting host** (looks like `s2399753.eu-fsn-3.betterstackdata.com`) and **source token**. You'll paste them into the Vector config.
+
+2. **Install Vector**
+
+    ```bash
+    curl -1sLf 'https://repositories.timber.io/public/vector/cfg/setup/bash.deb.sh' | sudo -E bash
+    sudo apt install -y vector
+    ```
+
+3. **Configure Vector**
+
+    ```bash
+    sudo nano /etc/vector/vector.yaml
+    ```
+
+    Replace the contents with:
+
+    ```yaml title="/etc/vector/vector.yaml"
+    data_dir: /var/lib/vector
+
+    sources:
+      journald:
+        type: journald
+        include_units:
+          - jupyterhub.service
+          - traefik.service
+          - prometheus.service
+          - prometheus-node-exporter.service
+          - jupyterhub-heartbeat.service
+          - vector.service
+          - jupyter-poison-cleaner.service
+
+    transforms:
+      better_stack_transform:
+        type: remap
+        inputs:
+          - journald
+        source: |
+          .dt = del(.timestamp)
+          .host = del(."_HOSTNAME") || .host
+          .unit = del(."_SYSTEMD_UNIT") || .unit
+          .message = .message || ""
+
+    sinks:
+      better_stack:
+        type: http
+        method: post
+        inputs:
+          - better_stack_transform
+        uri: https://<your-logs-host>.betterstackdata.com/
+        encoding:
+          codec: json
+        compression: gzip
+        auth:
+          strategy: bearer
+          token: <your-source-token>
+    ```
+
+    The `remap` step renames Vector's default field names into the ones BetterStack's UI expects (`dt`, `host`, `unit`, `message`).
+
+    Add new units to `include_units` whenever you stand up another systemd service worth keeping logs for — the [auto-cleaner](/configuration/auto-cleaner/), for example, is already in the list above so its `JUPYTER_CLEANUP …` event lines flow straight into BetterStack.
+
+4. **Allow Vector to read the journal**
+
+    Vector's package adds the `vector` user to the `systemd-journal` group automatically, but verify:
+
+    ```bash
+    id vector
+    # expect: ... groups=...,systemd-journal
+    ```
+
+5. **Start Vector**
+
+    ```bash
+    sudo systemctl enable --now vector
+    sudo systemctl status vector --no-pager | head -10
+    ```
+
+    BetterStack's source page should start showing live log volume within ~30 seconds.
+</Steps>
+
+## 3. Metrics via Prometheus remote_write
+
+If you've followed the [monitoring guide](/configuration/monitoring/), you've already got Prometheus scraping locally. With one block of config it can also stream every sample off-host to BetterStack — handy for dashboards that survive a host outage and for alerts that fire even when the box is down.
+
+<Steps>
+1. **Create a "Metrics" source in BetterStack**
+
+    BetterStack → Telemetry → Sources → Connect source → "Prometheus remote_write".
+
+    Note the ingest URL (`https://s<id>.<region>.betterstackdata.com/metrics`) and bearer token.
+
+2. **Add a `remote_write` block to `/etc/prometheus/prometheus.yml`**
+
+    Append (don't replace) at the bottom:
+
+    ```yaml title="/etc/prometheus/prometheus.yml"
+    remote_write:
+      - url: https://<your-metrics-host>.betterstackdata.com/metrics
+        authorization:
+          credentials: <your-source-token>
+    ```
+
+3. **Reload Prometheus**
+
+    ```bash
+    sudo systemctl restart prometheus
+    journalctl -u prometheus -n 20 --no-pager | grep -i remote
+    ```
+
+    You should see a "Started WAL watcher" line. BetterStack's metrics source page will start ticking up a sample-rate within a minute.
+</Steps>
+
+## What to alert on
+
+Once these three pieces are wired up, in BetterStack:
+
+- **Uptime → Heartbeat**: alert immediately if the heartbeat goes red. This is your "is the host alive?" signal.
+- **Telemetry → Logs**: build a query for `unit:"jupyter-poison-cleaner.service" AND message:"JUPYTER_CLEANUP"` and have it page you on bursts (a single student dumping a 50 MB blob into a notebook is fine; ten students in a minute is a probable lesson-wide problem).
+- **Telemetry → Metrics**: alert on `(node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.05` for sustained low free memory, and on per-user `jupyter_user_memory_bytes > <your-limit>` to catch users hitting their cgroup ceiling.
+
+<LinkCard title="Next: Auto-cleaning runaway notebooks" href="/configuration/auto-cleaner/" />
